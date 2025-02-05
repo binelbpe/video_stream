@@ -6,6 +6,7 @@ import VideoPlayer from '../components/VideoPlayer';
 import VideoMetadata from '../components/VideoMetadata';
 import Toast from '../components/Toast';
 import { FiArrowLeft } from 'react-icons/fi';
+import { config } from '../config/config.js';
 
 export default function VideoPlayerPage() {
   const { id } = useParams();
@@ -20,14 +21,19 @@ export default function VideoPlayerPage() {
 
   const fetchVideo = async () => {
     try {
-      const response = await axios.get(`http://localhost:3000/api/videos/${id}`);
+      const response = await axios.get(`${config.apiUrl}/api/videos/${id}`);
+      console.log('Fetched video data:', response.data);
       setVideo(response.data);
     } catch (error) {
-      setToast({ message: 'Failed to load video', type: 'error' });
       console.error('Error fetching video:', error);
+      setToast({ message: 'Failed to load video', type: 'error' });
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleError = (message) => {
+    setToast({ message, type: 'error' });
   };
 
   if (loading) {
@@ -68,7 +74,8 @@ export default function VideoPlayerPage() {
           {video && (
             <>
               <VideoPlayer 
-                src={`http://localhost:3000/api/videos/${video._id}/stream/master.m3u8`}
+                src={video.hlsUrl || video.s3Url}
+                onError={handleError}
               />
               <div className="p-6">
                 <h1 className="text-2xl font-semibold text-gray-900 mb-4">

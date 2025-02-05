@@ -9,31 +9,31 @@ const videoSchema = new mongoose.Schema({
     type: String,
     default: '',
   },
-  filename: {
+  s3Key: {
     type: String,
     required: true,
   },
-  path: {
+  s3Url: {
     type: String,
     required: true,
   },
-  thumbnailPath: {
+  thumbnailKey: {
     type: String,
   },
-  duration: {
-    type: Number,
+  thumbnailUrl: {
+    type: String,
+  },
+  hlsKey: {
+    type: String,
+  },
+  hlsUrl: {
+    type: String,
   },
   qualities: [{
-    resolution: { type: String, required: true },
-    path: { type: String, required: true },
-    bitrate: { type: String, required: true },
-    size: { type: String, required: true },
-    bandwidth: { type: Number, required: true }
+    resolution: String,
+    bandwidth: Number,
+    size: String
   }],
-  createdAt: {
-    type: Date,
-    default: Date.now,
-  },
   metadata: {
     duration: Number,
     size: Number,
@@ -43,6 +43,10 @@ const videoSchema = new mongoose.Schema({
     bitrate: Number,
     fps: Number,
     audioCodec: String,
+  },
+  createdAt: {
+    type: Date,
+    default: Date.now,
   },
 });
 

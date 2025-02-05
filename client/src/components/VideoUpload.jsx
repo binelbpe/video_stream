@@ -3,12 +3,32 @@ import axios from 'axios';
 import { motion } from 'framer-motion';
 import { FiUploadCloud, FiX, FiCheck, FiFile } from 'react-icons/fi';
 import PropTypes from 'prop-types';
+import { config } from '../config/config.js';
 
 export default function VideoUpload({ onUploadComplete, onError }) {
   const [file, setFile] = useState(null);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [dragActive, setDragActive] = useState(false);
+
+  const validateFile = (file) => {
+    const validTypes = [
+      'video/mp4',
+      'video/quicktime',
+      'video/x-msvideo',
+      'video/x-matroska'
+    ];
+    
+    if (!validTypes.includes(file.type)) {
+      throw new Error('Invalid file type. Please upload MP4, MOV, AVI, or MKV files.');
+    }
+
+    if (file.size > 500 * 1024 * 1024) { // 500MB
+      throw new Error('File too large. Maximum size is 500MB.');
+    }
+
+    return true;
+  };
 
   const handleDrag = useCallback((e) => {
     e.preventDefault();
@@ -26,19 +46,23 @@ export default function VideoUpload({ onUploadComplete, onError }) {
     setDragActive(false);
 
     const droppedFile = e.dataTransfer.files[0];
-    if (droppedFile?.type.startsWith('video/')) {
-      setFile(droppedFile);
-    } else {
-      onError('Please upload a video file');
+    try {
+      if (droppedFile && validateFile(droppedFile)) {
+        setFile(droppedFile);
+      }
+    } catch (error) {
+      onError(error.message);
     }
   }, [onError]);
 
   const handleFileChange = (e) => {
     const selectedFile = e.target.files[0];
-    if (selectedFile?.type.startsWith('video/')) {
-      setFile(selectedFile);
-    } else {
-      onError('Please upload a video file');
+    try {
+      if (selectedFile && validateFile(selectedFile)) {
+        setFile(selectedFile);
+      }
+    } catch (error) {
+      onError(error.message);
     }
   };
 
@@ -52,7 +76,10 @@ export default function VideoUpload({ onUploadComplete, onError }) {
       const formData = new FormData();
       formData.append('video', file);
       
-      const response = await axios.post('http://localhost:3000/api/videos/upload', formData, {
+      const response = await axios.post(`${config.apiUrl}/api/videos/upload`, formData, {
+        headers: {
+          'Content-Type': 'multipart/form-data',
+        },
         onUploadProgress: (progressEvent) => {
           const progress = Math.round((progressEvent.loaded * 100) / progressEvent.total);
           setUploadProgress(progress);
@@ -68,7 +95,7 @@ export default function VideoUpload({ onUploadComplete, onError }) {
       }
     } catch (error) {
       console.error('Upload error:', error);
-      onError('Failed to upload video');
+      onError(error.response?.data?.error || 'Failed to upload video');
     } finally {
       setUploading(false);
     }

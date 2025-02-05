@@ -1,128 +1,36 @@
 import { Video } from '../models/video.model.js';
+import { uploadToS3, deleteFromS3, uploadHLSToS3 } from '../../utils/s3Utils.js';
 import ffmpeg from 'fluent-ffmpeg';
 import { promises as fs } from 'fs';
 import path from 'path';
 import { rimraf } from 'rimraf';
 import mongoose from 'mongoose';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import { GetObjectCommand } from '@aws-sdk/client-s3';
+import { s3Client, S3_BUCKET_NAME } from '../../config/s3Config.js';
 
 const UPLOAD_DIR = 'uploads';
 const HLS_DIR = 'hls';
 const THUMBNAIL_DIR = 'thumbnails';
+const TEMP_DIR = 'temp';
 
-export const uploadVideo = async (req, res) => {
-  let uploadedFile = null;
-  let createdDirs = [];
-
-  try {
-    if (!req.file) {
-      return res.status(400).json({ error: 'No video file uploaded' });
-    }
-
-    uploadedFile = req.file;
-    const { filename, path: filePath } = uploadedFile;
-    console.log('Uploaded file:', { filename, path: filePath });
-
-    const outputDir = path.join(HLS_DIR, path.parse(filename).name);
-    console.log('Output directory:', outputDir);
-
-    // Create directories
-    for (const dir of [outputDir, THUMBNAIL_DIR]) {
-      await fs.mkdir(dir, { recursive: true });
-      createdDirs.push(dir);
-      console.log(`Created directory: ${dir}`);
-    }
-
-    // Verify file exists
-    await fs.access(filePath);
-    console.log('File exists and is accessible');
-
-    // Create video document
-    const video = new Video({
-      title: path.parse(filename).name,
-      filename,
-      path: filePath,
-      qualities: [],
-    });
-
-    // Generate thumbnail with better error handling
-    try {
-      const thumbnailPath = await generateThumbnail(filePath, filename);
-      video.thumbnailPath = thumbnailPath;
-      console.log('Thumbnail generated:', thumbnailPath);
-    } catch (error) {
-      console.error('Thumbnail generation failed:', error);
-      // Continue without thumbnail
-    }
-
-    // Generate HLS streams
-    console.log('Generating HLS streams...');
-    await generateHLSStreams(filePath, outputDir, video);
-    console.log('HLS streams generated');
-
-    // Generate master playlist
-    console.log('Generating master playlist...');
-    await generateMasterPlaylist(outputDir, video.qualities);
-    console.log('Master playlist generated');
-
-    // Extract metadata
-    try {
-      video.metadata = await extractMetadata(filePath);
-    } catch (error) {
-      console.error('Metadata extraction failed:', error);
-      video.metadata = {};
-    }
-
-    await video.save();
-    console.log('Video document saved to database');
-
-    res.status(201).json(video);
-
-  } catch (error) {
-    console.error('Upload error:', error);
-
-    // Cleanup on error
-    try {
-      if (uploadedFile) {
-        await fs.unlink(uploadedFile.path).catch(console.error);
-      }
-      
-      for (const dir of createdDirs) {
-        await rimraf(dir).catch(console.error);
-      }
-    } catch (cleanupError) {
-      console.error('Cleanup error:', cleanupError);
-    }
-
-    res.status(500).json({ 
-      error: 'Error processing video',
-      details: error.message 
-    });
-  }
-};
-
-const generateThumbnail = async (inputPath, filename) => {
-  const thumbnailFilename = `${path.parse(filename).name}.jpg`;
-  const thumbnailPath = path.join(THUMBNAIL_DIR, thumbnailFilename);
+const generateThumbnail = async (videoPath) => {
+  const thumbnailFilename = `${Date.now()}-thumbnail.jpg`;
+  const thumbnailPath = path.join(TEMP_DIR, thumbnailFilename);
   
-  await new Promise((resolve, reject) => {
-    ffmpeg(inputPath)
+  await fs.mkdir(TEMP_DIR, { recursive: true });
+
+  return new Promise((resolve, reject) => {
+    ffmpeg(videoPath)
       .screenshots({
         timestamps: ['00:00:01'],
         filename: thumbnailFilename,
-        folder: THUMBNAIL_DIR,
+        folder: TEMP_DIR,
         size: '320x240'
       })
-      .on('end', () => {
-        console.log('Thumbnail generated successfully');
-        resolve();
-      })
-      .on('error', (err) => {
-        console.error('Thumbnail generation error:', err);
-        reject(err);
-      });
+      .on('end', () => resolve(thumbnailPath))
+      .on('error', (err) => reject(err));
   });
-
-  return thumbnailPath;
 };
 
 const generateHLSStreams = async (inputPath, outputDir, video) => {
@@ -133,60 +41,44 @@ const generateHLSStreams = async (inputPath, outputDir, video) => {
     { resolution: '1080p', size: '1920x1080', bitrate: '5000k', bandwidth: 5000000 },
   ];
 
-  video.qualities = []; // Reset qualities array
+  // Create output directory
+  await fs.mkdir(outputDir, { recursive: true });
 
-  for (const quality of qualities) {
-    const outputPath = path.join(outputDir, `${quality.resolution}.m3u8`);
-    
-    try {
-      await new Promise((resolve, reject) => {
-        ffmpeg(inputPath)
-          .addOption('-profile:v', 'baseline')
-          .addOption('-level', '3.0')
-          .addOption('-start_number', '0')
-          .addOption('-hls_time', '10')
-          .addOption('-hls_list_size', '0')
-          .addOption('-f', 'hls')
-          .addOption('-c:v', 'libx264')
-          .addOption('-c:a', 'aac')
-          .addOption('-b:v', quality.bitrate)
-          .addOption('-maxrate', quality.bitrate)
-          .addOption('-bufsize', `${parseInt(quality.bitrate)}*2`)
-          .addOption('-s', quality.size)
-          .addOption('-preset', 'fast')
-          .addOption('-g', '48')
-          .addOption('-sc_threshold', '0')
-          .output(outputPath)
-          .on('start', (commandLine) => {
-            console.log('Spawned FFmpeg with command:', commandLine);
-          })
-          .on('progress', (progress) => {
-            console.log(`Processing ${quality.resolution}: ${progress.percent}% done`);
-          })
-          .on('end', () => {
-            console.log(`Finished processing ${quality.resolution}`);
-            video.qualities.push({
-              resolution: quality.resolution,
-              path: outputPath,
-              bitrate: quality.bitrate,
-              size: quality.size,
-              bandwidth: quality.bandwidth
-            });
-            resolve();
-          })
-          .on('error', (err) => {
-            console.error(`Error processing ${quality.resolution}:`, err);
-            reject(err);
-          })
-          .run();
-      });
-    } catch (error) {
-      console.error(`Error generating HLS stream for ${quality.resolution}:`, error);
-    }
-  }
+  // Generate streams for each quality
+  const qualityPromises = qualities.map(quality => {
+    return new Promise((resolve, reject) => {
+      ffmpeg(inputPath)
+        .size(quality.size)
+        .videoBitrate(quality.bitrate)
+        .outputOptions([
+          '-c:v h264',
+          '-c:a aac',
+          '-ar 48000',
+          '-b:a 128k',
+          '-hls_time 10',
+          '-hls_list_size 0',
+          '-f hls'
+        ])
+        .output(path.join(outputDir, `${quality.resolution}.m3u8`))
+        .on('end', () => {
+          resolve({
+            resolution: quality.resolution,
+            bandwidth: quality.bandwidth,
+            size: quality.size
+          });
+        })
+        .on('error', reject)
+        .run();
+    });
+  });
 
-  if (video.qualities.length === 0) {
-    throw new Error('Failed to generate any quality streams');
+  try {
+    const processedQualities = await Promise.all(qualityPromises);
+    await generateMasterPlaylist(outputDir, processedQualities);
+    return processedQualities;
+  } catch (error) {
+    console.error('Error generating HLS streams:', error);
+    throw error;
   }
 };
 
@@ -247,10 +139,113 @@ const extractMetadata = async (filePath) => {
   });
 };
 
+export const uploadVideo = async (req, res) => {
+  let uploadedFile = null;
+  let thumbnailPath = null;
+  let hlsDir = null;
+
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No video file uploaded' });
+    }
+
+    console.log('Starting video upload process...');
+    uploadedFile = {
+      ...req.file,
+      originalname: req.file.originalname || path.basename(req.file.filename)
+    };
+
+    // Create HLS directory
+    const hlsDirName = `${Date.now()}-${path.parse(uploadedFile.originalname).name}`;
+    hlsDir = path.join('temp', 'hls', hlsDirName);
+    await fs.mkdir(hlsDir, { recursive: true });
+    console.log('Created HLS directory:', hlsDir);
+
+    // Generate HLS streams
+    console.log('Generating HLS streams...');
+    const qualities = await generateHLSStreams(uploadedFile.path, hlsDir);
+    console.log('HLS streams generated:', qualities);
+
+    // Generate thumbnail
+    console.log('Generating thumbnail...');
+    thumbnailPath = await generateThumbnail(uploadedFile.path);
+
+    // Upload to S3 with better error handling
+    console.log('Uploading files to S3...');
+    let videoData, thumbnailData, hlsData;
+    
+    try {
+      [videoData, thumbnailData, hlsData] = await Promise.all([
+        uploadToS3({
+          path: uploadedFile.path,
+          originalname: uploadedFile.originalname,
+          mimetype: uploadedFile.mimetype
+        }, 'videos'),
+        uploadToS3({ 
+          path: thumbnailPath,
+          originalname: `${Date.now()}-thumbnail.jpg`,
+          mimetype: 'image/jpeg'
+        }, 'thumbnails'),
+        uploadHLSToS3(hlsDir, hlsDirName)
+      ]);
+      console.log('Files uploaded successfully:', { videoData, thumbnailData, hlsData });
+    } catch (uploadError) {
+      console.error('Error during S3 upload:', uploadError);
+      throw new Error('Failed to upload files to S3');
+    }
+
+    // Create video document
+    const metadata = await extractMetadata(uploadedFile.path);
+    const video = new Video({
+      title: path.parse(uploadedFile.originalname).name,
+      s3Key: videoData.key,
+      s3Url: videoData.url,
+      thumbnailKey: thumbnailData.key,
+      thumbnailUrl: thumbnailData.url,
+      hlsKey: hlsData.key,
+      hlsUrl: hlsData.url,
+      qualities,
+      metadata,
+    });
+
+    await video.save();
+
+    // Cleanup
+    await Promise.all([
+      fs.rm(uploadedFile.path, { force: true }),
+      fs.rm(thumbnailPath, { force: true }),
+      fs.rm(hlsDir, { recursive: true, force: true })
+    ]);
+
+    res.status(201).json(video);
+  } catch (error) {
+    console.error('Upload error:', error);
+    // Cleanup on error
+    try {
+      await Promise.all([
+        uploadedFile?.path && fs.rm(uploadedFile.path, { force: true }),
+        thumbnailPath && fs.rm(thumbnailPath, { force: true }),
+        hlsDir && fs.rm(hlsDir, { recursive: true, force: true })
+      ]);
+    } catch (cleanupError) {
+      console.error('Cleanup error:', cleanupError);
+    }
+    res.status(500).json({ error: 'Error processing video' });
+  }
+};
+
 export const getVideos = async (req, res) => {
   try {
     const videos = await Video.find().sort({ createdAt: -1 });
-    res.json(videos);
+    
+    // Use stored S3 URLs
+    const videosWithUrls = videos.map(video => ({
+      ...video.toObject(),
+      videoUrl: video.s3Url,
+      thumbnailUrl: video.thumbnailUrl
+    }));
+
+    res.json(videosWithUrls);
   } catch (error) {
     console.error('Error fetching videos:', error);
     res.status(500).json({ error: 'Error fetching videos' });
@@ -263,7 +258,13 @@ export const getVideo = async (req, res) => {
     if (!video) {
       return res.status(404).json({ error: 'Video not found' });
     }
-    res.json(video);
+
+    // Use stored S3 URLs directly
+    res.json({
+      ...video.toObject(),
+      videoUrl: video.s3Url,
+      thumbnailUrl: video.thumbnailUrl
+    });
   } catch (error) {
     console.error('Error fetching video:', error);
     res.status(500).json({ error: 'Error fetching video' });
@@ -324,20 +325,11 @@ export const deleteVideo = async (req, res) => {
       return res.status(404).json({ error: 'Video not found' });
     }
 
-    // Delete files
-    const filesToDelete = [
-      video.path,
-      video.thumbnailPath,
-      path.join(HLS_DIR, path.parse(video.filename).name)
-    ];
-
-    for (const file of filesToDelete) {
-      try {
-        await rimraf(file);
-      } catch (error) {
-        console.error(`Error deleting ${file}:`, error);
-      }
-    }
+    // Delete files from S3
+    await Promise.all([
+      deleteFromS3(video.s3Key),
+      video.thumbnailKey && deleteFromS3(video.thumbnailKey),
+    ]);
 
     await Video.findByIdAndDelete(req.params.id);
     res.json({ message: 'Video deleted successfully' });

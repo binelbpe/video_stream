@@ -3,7 +3,7 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import mongoose from 'mongoose';
 import { videoRouter } from './routes/video.routes.js';
-import { ensureDirectories } from './utils/ensureDirectories.js';
+import { promises as fs } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -12,11 +12,18 @@ const __dirname = path.dirname(__filename);
 
 dotenv.config();
 
+// Ensure required directories exist
+await fs.mkdir('temp', { recursive: true });
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 // Middleware
-app.use(cors());
+app.use(cors({
+  origin: process.env.CORS_ORIGIN,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
 app.use(express.json());
 
 // Serve static files
@@ -27,17 +34,12 @@ app.use('/hls', express.static('hls'));
 // Routes
 app.use('/api/videos', videoRouter);
 
-// Create required directories and start server
+// Start server
 async function startServer() {
   try {
-    // Ensure all required directories exist
-    await ensureDirectories();
-
-    // Connect to MongoDB
-    await mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/video-streaming');
+    await mongoose.connect(process.env.MONGODB_URI);
     console.log('Connected to MongoDB');
 
-    // Start server
     app.listen(PORT, () => {
       console.log(`Server running on port ${PORT}`);
     });

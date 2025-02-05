@@ -1,32 +1,34 @@
 import express from 'express';
 import multer from 'multer';
 import path from 'path';
-import { uploadVideo, getVideos, getVideo, streamVideo, getThumbnail, deleteVideo } from '../controllers/video.controller.js';
+import { uploadVideo, getVideos, getVideo, deleteVideo } from '../controllers/video.controller.js';
+import { promises as fs } from 'fs';
+
+// Ensure temp directory exists
+await fs.mkdir('temp', { recursive: true });
 
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
-    cb(null, 'uploads/');
+    cb(null, 'temp/');
   },
   filename: (req, file, cb) => {
-    // Add file extension validation
-    const allowedExtensions = ['.mp4', '.mov', '.avi', '.mkv'];
-    const ext = path.extname(file.originalname).toLowerCase();
-    
-    if (!allowedExtensions.includes(ext)) {
-      cb(new Error('Invalid file type'));
-      return;
-    }
-    
-    cb(null, Date.now() + '-' + file.originalname);
+    cb(null, `${Date.now()}-${file.originalname}`);
   },
 });
 
 const fileFilter = (req, file, cb) => {
-  // Additional validation if needed
-  if (file.mimetype.startsWith('video/')) {
+  // List of valid MIME types
+  const validMimeTypes = [
+    'video/mp4',
+    'video/quicktime', // .mov
+    'video/x-msvideo', // .avi
+    'video/x-matroska', // .mkv
+  ];
+
+  if (validMimeTypes.includes(file.mimetype)) {
     cb(null, true);
   } else {
-    cb(new Error('Invalid file type'), false);
+    cb(new Error(`Invalid file type. Supported types: ${validMimeTypes.join(', ')}`));
   }
 };
 
@@ -40,16 +42,17 @@ const upload = multer({
 
 export const videoRouter = express.Router();
 
-// Add error handling middleware for multer
 const handleUpload = (req, res, next) => {
   upload.single('video')(req, res, (err) => {
     if (err instanceof multer.MulterError) {
       if (err.code === 'LIMIT_FILE_SIZE') {
-        return res.status(400).json({ error: 'File too large. Maximum size is 500MB' });
+        return res.status(400).json({ 
+          error: 'File too large. Maximum size is 500MB' 
+        });
       }
       return res.status(400).json({ error: err.message });
     } else if (err) {
-      return res.status(400).json({ error: 'Invalid file type' });
+      return res.status(400).json({ error: err.message });
     }
     next();
   });
@@ -58,6 +61,4 @@ const handleUpload = (req, res, next) => {
 videoRouter.post('/upload', handleUpload, uploadVideo);
 videoRouter.get('/', getVideos);
 videoRouter.get('/:id', getVideo);
-videoRouter.get('/:id/thumbnail', getThumbnail);
-videoRouter.get('/:id/stream/:filename', streamVideo);
 videoRouter.delete('/:id', deleteVideo); 

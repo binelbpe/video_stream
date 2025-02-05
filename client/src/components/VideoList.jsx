@@ -4,8 +4,9 @@ import VideoPlayer from './VideoPlayer';
 import VideoMetadata from './VideoMetadata';
 import { motion } from 'framer-motion';
 import PropTypes from 'prop-types';
-import { FiPlay, FiTrash2, FiClock, FiCalendar, FiFilm } from 'react-icons/fi';
+import { FiPlay, FiTrash2, FiFilm } from 'react-icons/fi';
 import { useNavigate } from 'react-router-dom';
+import { config } from '../config/config.js';
 
 export default function VideoList({ onError }) {
   const [videos, setVideos] = useState([]);
@@ -20,7 +21,7 @@ export default function VideoList({ onError }) {
 
   const fetchVideos = async () => {
     try {
-      const response = await axios.get('http://localhost:3000/api/videos');
+      const response = await axios.get(`${config.apiUrl}/api/videos`);
       setVideos(response.data);
     } catch (err) {
       setError('Failed to fetch videos');
@@ -36,7 +37,7 @@ export default function VideoList({ onError }) {
     }
 
     try {
-      await axios.delete(`http://localhost:3000/api/videos/${video._id}`);
+      await axios.delete(`${config.apiUrl}/api/videos/${video._id}`);
       setVideos(videos.filter(v => v._id !== video._id));
       if (selectedVideo?._id === video._id) {
         setSelectedVideo(null);
@@ -47,13 +48,12 @@ export default function VideoList({ onError }) {
     }
   };
 
-  const getThumbnailUrl = (video) => {
-    if (!video.thumbnailPath) return null;
-    return `http://localhost:3000/thumbnails/${video.thumbnailPath.split(/[/\\]/).pop()}`;
-  };
-
   const handleVideoClick = (video) => {
-    navigate(`/videos/${video._id}`);
+    if (video.s3Url) {
+      navigate(`/videos/${video._id}`);
+    } else {
+      onError('Video URL not available');
+    }
   };
 
   // Container animation variants
@@ -114,7 +114,7 @@ export default function VideoList({ onError }) {
           className="mb-12 bg-white rounded-2xl shadow-xl overflow-hidden"
         >
           <VideoPlayer 
-            src={`http://localhost:3000/api/videos/${selectedVideo._id}/stream/master.m3u8`} 
+            src={`${config.apiUrl}/api/videos/${selectedVideo._id}/stream/master.m3u8`} 
           />
           <div className="p-6">
             <div className="flex justify-between items-center mb-4">
@@ -124,7 +124,10 @@ export default function VideoList({ onError }) {
               <motion.button
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.95 }}
-                onClick={() => handleDelete(selectedVideo)}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleDelete(selectedVideo);
+                }}
                 className="flex items-center gap-2 px-4 py-2 text-red-600 hover:text-white
                   hover:bg-red-600 border-2 border-red-600 rounded-lg transition-all duration-300"
               >
@@ -151,53 +154,69 @@ export default function VideoList({ onError }) {
           variants={containerVariants}
           initial="hidden"
           animate="show"
-          className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6"
+          className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6 p-6"
         >
           {videos.map((video) => (
-            <motion.div 
+            <motion.div
               key={video._id}
               variants={itemVariants}
-              whileHover={{ y: -5, scale: 1.02 }}
-              className="group bg-white rounded-xl shadow-lg overflow-hidden cursor-pointer
-                hover:shadow-2xl transition-all duration-300"
-              onClick={() => handleVideoClick(video)}
+              className="bg-white rounded-xl shadow-lg overflow-hidden hover:shadow-xl 
+                transition-shadow duration-300"
             >
-              <div className="relative aspect-video bg-gray-100">
-                {video.thumbnailPath ? (
-                  <img 
-                    src={getThumbnailUrl(video)}
+              <div className="relative aspect-video group cursor-pointer"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleVideoClick(video);
+                }}>
+                {video.thumbnailUrl ? (
+                  <img
+                    src={video.thumbnailUrl}
                     alt={video.title}
                     className="w-full h-full object-cover"
+                    onError={(e) => {
+                      console.error('Thumbnail load error:', e);
+                      e.target.src = 'fallback-image-url.jpg'; // Add a fallback image
+                    }}
                   />
                 ) : (
-                  <div className="w-full h-full flex items-center justify-center">
-                    <FiFilm className="w-12 h-12 text-gray-400" />
+                  <div className="w-full h-full bg-gray-200 flex items-center justify-center">
+                    <span className="text-gray-400">No thumbnail</span>
                   </div>
                 )}
-                <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100
-                  flex items-center justify-center transition-opacity duration-300">
-                  <motion.div
-                    whileHover={{ scale: 1.1 }}
-                    className="w-16 h-16 rounded-full bg-white/20 flex items-center justify-center"
-                  >
-                    <FiPlay className="w-8 h-8 text-white" />
-                  </motion.div>
+                
+                <div className="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-30 
+                  transition-all duration-300 flex items-center justify-center">
+                  <FiPlay className="text-white opacity-0 group-hover:opacity-100 transform 
+                    scale-50 group-hover:scale-100 transition-all duration-300" 
+                    size={48} />
                 </div>
               </div>
+
               <div className="p-4">
-                <h3 className="font-semibold text-gray-900 mb-2 group-hover:text-indigo-600
-                  transition-colors duration-300">
-                  {video.title}
-                </h3>
-                <div className="flex items-center gap-4 text-sm text-gray-600">
-                  <div className="flex items-center gap-1">
-                    <FiClock className="w-4 h-4" />
-                    <span>{video.metadata?.duration || 'Unknown'}</span>
+                <h3 className="text-lg font-semibold text-gray-800 mb-2">{video.title}</h3>
+                {video.qualities && (
+                  <div className="flex gap-2 mb-2">
+                    {video.qualities.map((quality) => (
+                      <span key={quality.resolution} 
+                        className="text-xs bg-gray-100 text-gray-600 px-2 py-1 rounded">
+                        {quality.resolution}
+                      </span>
+                    ))}
                   </div>
-                  <div className="flex items-center gap-1">
-                    <FiCalendar className="w-4 h-4" />
-                    <span>{new Date(video.createdAt).toLocaleDateString()}</span>
-                  </div>
+                )}
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-gray-500">
+                    {new Date(video.createdAt).toLocaleDateString()}
+                  </span>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleDelete(video);
+                    }}
+                    className="text-red-500 hover:text-red-700 transition-colors"
+                  >
+                    <FiTrash2 size={18} />
+                  </button>
                 </div>
               </div>
             </motion.div>
