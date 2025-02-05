@@ -6,7 +6,9 @@
   "type": "module",
   "scripts": {
     "start": "node src/index.js",
-    "dev": "nodemon src/index.js"
+    "dev": "nodemon src/index.js",
+    "build": "echo 'No build step required'",
+    "postinstall": "node -e \"try { require('fs').symlinkSync(require('path').resolve('node_modules/@ffmpeg-installer/linux-x64/ffmpeg'), 'node_modules/.bin/ffmpeg', 'file') } catch (e) { }\""
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.741.0",
@@ -23,5 +25,8 @@
   },
   "devDependencies": {
     "nodemon": "^3.0.1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }
